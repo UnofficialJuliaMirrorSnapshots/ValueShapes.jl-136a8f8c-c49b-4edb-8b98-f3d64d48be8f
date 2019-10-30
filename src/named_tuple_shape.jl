@@ -1,16 +1,22 @@
 # This file is a part of ValueShapes.jl, licensed under the MIT License (MIT).
 
 
+@inline _varoffset_cumsum_impl(s, x, y, rest...) = (s, _varoffset_cumsum_impl(s+x, y, rest...)...)
+@inline _varoffset_cumsum_impl(s,x) = (s,)
+@inline _varoffset_cumsum_impl(s) = ()
+@inline _varoffset_cumsum(x::Tuple) = _varoffset_cumsum_impl(0, x...)
+
+
 """
-    NamedTupleShape{N,AC} <: AbstractValueShape
+    NamedTupleShape{names,...} <: AbstractValueShape
 
 Defines the shape of a `NamedTuple` (resp.  set of variables, parameters,
 etc.).
 
 Constructors:
 
-    NamedTupleShape(name1 = shape1, ...)
-    NamedTupleShape(shape::NamedTuple)
+    NamedTupleShape(name1 = shape1::AbstractValueShape, ...)
+    NamedTupleShape(named_shapes::NamedTuple)
 
 e.g.
 
@@ -19,37 +25,6 @@ e.g.
         b = ScalarShape{Real}(),
         c = ArrayShape{Real}(4)
     )
-
-Use
-
-    (shape::NamedTupleShape)(data::AbstractVector)::NamedTuple
-
-to view a  flattened data vector as a `NamedTuple`.
-
-    Base.Vector{T}(undef, shape::NamedTupleShape)
-    Base.Vector(undef, shape::NamedTupleShape)
-
-will create a suitable uninitialized vector of the right length to hold such
-flattened data for the given shape. If no type `T` is given, a suitable non-abstract
-type will be chosen automatically via `nonabstract_eltype(NamedTupleShape)`.
-
-When dealing with multiple vectors of flattened data,
-
-    (shape::NamedTupleShape)(
-        data::ArrayOfArrays.AbstractVectorOfSimilarVectors
-    )::NamedTuple
-
-creates a view of a vector of flattened data vectors as a table with the
-variable names as column names and the (possibly array-shaped) variable
-value views as entries. In return,
-
-    ArraysOfArrays.VectorOfSimilarVectors{T}(shape::NamedTupleShape)
-    ArraysOfArrays.VectorOfSimilarVectors(shape::NamedTupleShape)
-
-will create a suitable vector (of length zero) of vectors to hold flattened
-value data. The result will be a `VectorOfSimilarVectors` wrapped around a
-2-dimensional `ElasticArray`. Internally all data is stored in a single
-flat `Vector{T}`.
 
 Example:
 
@@ -62,10 +37,12 @@ shape = NamedTupleShape(
 data = VectorOfSimilarVectors{Float64}(shape)
 resize!(data, 10)
 rand!(flatview(data))
-table = TypedTables.Table(shape(data))
+table = shape.(data)
 fill!(table.a, 4.2)
 all(x -> x == 4.2, view(flatview(data), 1, :))
 ```
+
+See also the documentation of [`AbstractValueShape`](@ref).
 """
 struct NamedTupleShape{names,AT<:(NTuple{N,ValueAccessor} where N)} <: AbstractValueShape
     _accessors::NamedTuple{names,AT}
@@ -90,12 +67,10 @@ export NamedTupleShape
 @inline NamedTupleShape(;named_shapes...) = NamedTupleShape(values(named_shapes))
 
 
-@inline Base.size(::NamedTupleShape) = ()
-
-
 @inline _accessors(x::NamedTupleShape) = getfield(x, :_accessors)
-@inline totalndof(x::NamedTupleShape) = getfield(x, :_flatdof)
+@inline _flatdof(x::NamedTupleShape) = getfield(x, :_flatdof)
 
+@inline totalndof(shape::NamedTupleShape) = _flatdof(shape)
 
 @inline Base.keys(shape::NamedTupleShape) = keys(_accessors(shape))
 
@@ -111,16 +86,21 @@ export NamedTupleShape
 
 @inline Base.map(f, shape::NamedTupleShape) = map(f, _accessors(shape))
 
-
-Base.@propagate_inbounds function (shape::NamedTupleShape)(data::AbstractVector)
-    accessors = _accessors(shape)
-    map(va -> va(data), accessors)
+function Base.merge(a::NamedTuple, shape::NamedTupleShape{names}) where {names}
+    merge(a, NamedTuple{names}(map(x -> valshape(x), values(shape))))
 end
 
-Base.@propagate_inbounds function (shape::NamedTupleShape)(data::AbstractVectorOfSimilarVectors)
+
+valshape(x::NamedTuple) = NamedTupleShape(map(valshape, x))
+
+
+(shape::NamedTupleShape)(::UndefInitializer) = map(x -> valshape(x)(undef), shape)
+
+
+Base.@propagate_inbounds function (shape::NamedTupleShape)(data::AbstractVector{<:Real})
+    @boundscheck _checkcompat(shape, data)
     accessors = _accessors(shape)
-    cols = map(va -> va(data), accessors)
-    TypedTables.Table(cols)
+    map(va -> data[va], accessors)
 end
 
 
@@ -133,15 +113,16 @@ end
     _multi_promote_type(map(nonabstract_eltype, values(shape))...)
 
 
-Base.Vector{T}(::UndefInitializer, shape::NamedTupleShape) where T =
-    Vector{T}(undef, totalndof(shape))
+Base.@propagate_inbounds function _bcasted_apply(shape::NamedTupleShape, data::AbstractVector{<:AbstractVector{<:Real}})
+    accessors = _accessors(shape)
+    cols = map(va -> getindex.(data, va), accessors)
+    TypedTables.Table(cols)
+end
 
-Base.Vector(::UndefInitializer, shape::NamedTupleShape) =
-    Vector{nonabstract_eltype(shape)}(undef, totalndof(shape))
+# Specialize (::NamedTupleShape).(::AbstractVector{<:AbstractVector}):
+Base.copy(instance::VSBroadcasted1{<:NamedTupleShape,AbstractVector{<:AbstractVector}}) =
+    _bcasted_apply(instance.f, instance.args[1])    
 
 
-ArraysOfArrays.VectorOfSimilarVectors{T}(shape::NamedTupleShape) where T =
-    VectorOfSimilarVectors(ElasticArray{T}(undef, totalndof(shape), 0))
 
-ArraysOfArrays.VectorOfSimilarVectors(shape::NamedTupleShape) =
-    VectorOfSimilarVectors(ElasticArray{nonabstract_eltype(shape)}(undef, totalndof(shape), 0))
+# ToDo: Implement support for ValueAccessor{NamedTupleShape}
