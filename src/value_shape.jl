@@ -99,7 +99,7 @@ function _valshapeoftype end
 """
     valshape(x)::AbstractValueShape
     valshape(acc::ValueAccessor)::AbstractValueShape
-    valshape(d::Distributions.Distribution)::AbstractValueShape
+    valshape(d::Distribution)::AbstractValueShape
 
 Get the value shape of an arbitrary value, resp. the shape a `ValueAccessor`
 is based on, or the shape of the variates for a `Distribution`.
@@ -128,7 +128,7 @@ export totalndof
 function _checkcompat(shape::AbstractValueShape, data::AbstractVector{<:Real})
     n_shape = totalndof(shape)
     n_data = length(eachindex(data))
-     if n_shape != length(eachindex(data))
+    if n_shape != length(eachindex(data))
         throw(ArgumentError("Data vector of length $(n_data) incompatible with value shape with $(n_shape) degrees of freedom"))
     end
     nothing
